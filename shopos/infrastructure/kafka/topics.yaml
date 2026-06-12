@@ -1,0 +1,26 @@
+# ShopOS Kafka topic catalog (reference for operators)
+topics:
+  - user.registered
+  - user.email_verified
+  - user.product_viewed
+  - product.created
+  - product.updated
+  - product.price_dropped
+  - inventory.low_stock
+  - inventory.back_in_stock
+  - inventory.confirmed
+  - inventory.release
+  - cart.item_added
+  - cart.abandoned
+  - order.created
+  - order.confirmed
+  - order.shipped
+  - order.delivered
+  - order.cancelled
+  - payment.initiate
+  - payment.completed
+  - payment.failed
+  - payment.refunded
+  - review.submitted
+  - search.query_made
+  - search.zero_results

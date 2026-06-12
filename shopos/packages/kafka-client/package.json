@@ -1,0 +1,19 @@
+{
+  "name": "@shopos/kafka-client",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@shopos/shared-types": "*",
+    "kafkajs": "^2.2.4",
+    "uuid": "^11.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

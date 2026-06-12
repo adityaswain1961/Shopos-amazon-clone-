@@ -1,0 +1,25 @@
+# ArgoCD Application — apply after installing ArgoCD in the cluster
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: shopos
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR_ORG/shopos.git
+    targetRevision: main
+    path: shopos/infrastructure/helm/shopos
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-production.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: shopos
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

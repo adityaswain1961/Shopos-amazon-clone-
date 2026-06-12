@@ -1,0 +1,60 @@
+# Production-oriented overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d
+version: '3.8'
+
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    restart: always
+
+  mongodb:
+    environment:
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    restart: always
+
+  redis:
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    restart: always
+
+  kafka:
+    restart: always
+
+  kong:
+    restart: always
+    environment:
+      KONG_LOG_LEVEL: notice
+
+  auth-service:
+    restart: always
+    environment:
+      NODE_ENV: production
+      MONGO_URI: ${MONGO_URI}
+      REDIS_URL: ${REDIS_URL}
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_SERVICE_NAME: auth-service
+
+  user-service:
+    restart: always
+    environment:
+      NODE_ENV: production
+      OTEL_SERVICE_NAME: user-service
+
+  product-service:
+    restart: always
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL}
+      OTEL_SERVICE_NAME: product-service
+
+  order-service:
+    restart: always
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+
+  payment-service:
+    restart: always
+    environment:
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      ASPNETCORE_ENVIRONMENT: Production

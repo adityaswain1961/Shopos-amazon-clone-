@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package shopos;
+
+// ---------------------------------------------------------
+// This file serves as the single source of truth for all
+// synchronous inter-service communication via gRPC.
+// ---------------------------------------------------------
+
+service AuthService {
+  rpc ValidateToken (TokenRequest) returns (TokenResponse) {}
+}
+
+message TokenRequest {
+  string token = 1;
+}
+
+message TokenResponse {
+  bool is_valid = 1;
+  string user_id = 2;
+  string role = 3;
+}
+
+service InventoryService {
+  rpc CheckAvailability (InventoryRequest) returns (InventoryResponse) {}
+}
+
+message InventoryRequest {
+  string product_id = 1;
+  string variant_id = 2;
+  int32 quantity = 3;
+}
+
+message InventoryResponse {
+  bool available = 1;
+}

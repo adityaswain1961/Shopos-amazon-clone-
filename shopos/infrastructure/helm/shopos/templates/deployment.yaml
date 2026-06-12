@@ -1,0 +1,78 @@
+{{- range $name, $svc := .Values.services }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+    app: {{ $name }}
+    shopos.io/tier: backend
+    {{- include "shopos.labels" $ | nindent 4 }}
+spec:
+  replicas: {{ $svc.replicas | default 2 }}
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        shopos.io/tier: backend
+      {{- if or $svc.metrics $svc.metricsPath }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $svc.port | quote }}
+        prometheus.io/path: {{ $svc.metricsPath | default "/metrics" | quote }}
+      {{- end }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: {{ $name }}
+          image: {{ $.Values.global.imageRegistry }}/{{ $name }}:{{ $.Values.global.imageTag }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ $svc.port }}
+          envFrom:
+            - configMapRef:
+                name: shopos-common
+            - secretRef:
+                name: shopos-secrets
+          env:
+            - name: PORT
+              value: {{ $svc.port | quote }}
+            - name: KAFKA_BROKERS
+              value: {{ $.Values.global.kafka.brokers | quote }}
+            - name: AUTH_JWKS_URL
+              value: {{ $.Values.global.auth.jwksUrl | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ $.Values.global.otel.endpoint | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ $svc.port }}
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: {{ if eq $name "order-service" }}/actuator/health/readiness"{{ else }}/ready"{{ end }}
+              port: {{ $svc.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml $.Values.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+spec:
+  selector:
+    app: {{ $name }}
+  ports:
+    - port: {{ $svc.port }}
+      targetPort: {{ $svc.port }}
+{{- end }}

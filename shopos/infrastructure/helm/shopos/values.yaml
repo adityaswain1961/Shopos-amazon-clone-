@@ -1,0 +1,89 @@
+global:
+  imageRegistry: ghcr.io/shopos
+  imageTag: latest
+  imagePullPolicy: IfNotPresent
+  namespace: shopos
+
+  kafka:
+    brokers: kafka.shopos.svc.cluster.local:9092
+
+  auth:
+    jwksUrl: http://auth-service:3001/.well-known/jwks.json
+
+  otel:
+    endpoint: http://otel-collector:4318
+
+ingress:
+  enabled: true
+  className: nginx
+  host: api.shopos.example.com
+  tls:
+    enabled: true
+    secretName: shopos-api-tls
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilization: 70
+
+services:
+  auth-service:
+    port: 3001
+    replicas: 2
+    metrics: true
+  user-service:
+    port: 3002
+    replicas: 2
+    metrics: true
+  product-service:
+    port: 3003
+    replicas: 2
+    metrics: true
+  inventory-service:
+    port: 3004
+    replicas: 2
+    metrics: true
+  review-service:
+    port: 3005
+    replicas: 2
+    metrics: true
+  cart-service:
+    port: 3006
+    replicas: 2
+    metrics: false
+  order-service:
+    port: 3007
+    replicas: 2
+    metricsPath: /actuator/prometheus
+  payment-service:
+    port: 3008
+    replicas: 2
+    metrics: true
+  coupon-service:
+    port: 3009
+    replicas: 2
+    metrics: true
+  discovery-service:
+    port: 3010
+    replicas: 2
+    metrics: false
+  notification-service:
+    port: 3013
+    replicas: 2
+    metrics: true
+  analytics-service:
+    port: 3014
+    replicas: 2
+    metrics: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+networkPolicy:
+  enabled: true

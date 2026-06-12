@@ -1,0 +1,41 @@
+{
+  "name": "shopos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ShopOS — Amazon-scale e-commerce microservices monorepo",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:auth": "npm run dev --workspace=services/auth-service",
+    "build:auth": "npm run build --workspace=services/auth-service",
+    "test:auth": "npm test --workspace=services/auth-service",
+    "dev:user": "npm run dev --workspace=services/user-service",
+    "build:user": "npm run build --workspace=services/user-service",
+    "test:user": "npm test --workspace=services/user-service",
+    "dev:product": "npm run dev --workspace=services/product-service",
+    "build:product": "npm run build --workspace=services/product-service",
+    "test:product": "npm test --workspace=services/product-service",
+    "dev:coupon": "npm run dev --workspace=services/coupon-service",
+    "dev:review": "npm run dev --workspace=services/review-service",
+    "dev:notification": "npm run dev --workspace=services/notification-service",
+    "build:shared-types": "npm run build --workspace=packages/shared-types",
+    "build:kafka-client": "npm run build --workspace=packages/kafka-client",
+    "build:observability": "npm run build --workspace=packages/observability",
+    "build:jwt-verifier": "npm run build --workspace=packages/jwt-verifier",
+    "observability:up": "docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "prettier": "^3.4.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}

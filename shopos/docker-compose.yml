@@ -1,0 +1,309 @@
+version: '3.8'
+
+x-kafka-env: &kafka-env
+  KAFKA_BROKERS: kafka:29092
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: shopos-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: shopos_admin
+      POSTGRES_PASSWORD: shopos_password
+      POSTGRES_DB: shopos_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopos_admin -d shopos_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mongodb:
+    image: mongo:6
+    container_name: shopos-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin_password
+    volumes:
+      - mongodb_data:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: shopos-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: shopos-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: shopos-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    container_name: shopos-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+
+  kong:
+    image: kong:3.4.0-ubuntu
+    container_name: shopos-kong
+    depends_on:
+      - auth-service
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong/kong.yml
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: "0.0.0.0:8001"
+      KONG_PLUGINS: bundled,prometheus
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./kong/kong.yml:/kong/kong.yml:ro
+
+  auth-service:
+    build: ./services/auth-service
+    container_name: shopos-auth-service
+    environment:
+      <<: *kafka-env
+      MONGO_URI: mongodb://admin:admin_password@mongodb:27017/auth?authSource=admin
+      REDIS_URL: redis://redis:6379
+      PORT: 3001
+      NODE_ENV: development
+    ports:
+      - "3001:3001"
+    depends_on:
+      mongodb:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+
+  user-service:
+    build: ./services/user-service
+    container_name: shopos-user-service
+    environment:
+      <<: *kafka-env
+      MONGO_URI: mongodb://admin:admin_password@mongodb:27017/users?authSource=admin
+      REDIS_URL: redis://redis:6379
+      PORT: 3002
+      AUTH_JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      NODE_ENV: development
+    ports:
+      - "3002:3002"
+    depends_on:
+      - mongodb
+      - redis
+      - kafka
+      - auth-service
+
+  product-service:
+    build: ./services/product-service
+    container_name: shopos-product-service
+    environment:
+      <<: *kafka-env
+      DATABASE_URL: postgresql://shopos_admin:shopos_password@postgres:5432/shopos_db?schema=public
+      REDIS_URL: redis://redis:6379
+      AUTH_JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      PORT: 3003
+      NODE_ENV: development
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+
+  inventory-service:
+    build: ./services/inventory-service
+    container_name: shopos-inventory-service
+    environment:
+      <<: *kafka-env
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: shopos_admin
+      DB_PASSWORD: shopos_password
+      DB_NAME: shopos_db
+      PORT: 3004
+    ports:
+      - "3004:3004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  review-service:
+    build: ./services/review-service
+    container_name: shopos-review-service
+    environment:
+      <<: *kafka-env
+      DATABASE_URL: postgresql://shopos_admin:shopos_password@postgres:5432/shopos_db
+      AUTH_JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      PORT: 3005
+      NODE_ENV: development
+    ports:
+      - "3005:3005"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  cart-service:
+    build: ./services/cart-service
+    container_name: shopos-cart-service
+    environment:
+      REDIS_URL: redis://redis:6379/1
+      DATABASE_URL: postgresql://shopos_admin:shopos_password@postgres:5432/shopos_db
+      PORT: 3006
+    ports:
+      - "3006:3006"
+    depends_on:
+      - redis
+      - postgres
+
+  order-service:
+    build: ./services/order-service
+    container_name: shopos-order-service
+    environment:
+      <<: *kafka-env
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/shopos_db
+      SPRING_DATASOURCE_USERNAME: shopos_admin
+      SPRING_DATASOURCE_PASSWORD: shopos_password
+      SERVER_PORT: 3007
+    ports:
+      - "3007:3007"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  payment-service:
+    build: ./services/payment-service
+    container_name: shopos-payment-service
+    environment:
+      <<: *kafka-env
+      ConnectionStrings__DefaultConnection: Host=postgres;Port=5432;Database=shopos_db;Username=shopos_admin;Password=shopos_password
+      ASPNETCORE_URLS: http://+:3008
+      STRIPE_SECRET_KEY: sk_test_mock
+    ports:
+      - "3008:3008"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  coupon-service:
+    build: ./services/coupon-service
+    container_name: shopos-coupon-service
+    environment:
+      DATABASE_URL: postgresql://shopos_admin:shopos_password@postgres:5432/shopos_db
+      REDIS_URL: redis://redis:6379
+      AUTH_JWKS_URL: http://auth-service:3001/.well-known/jwks.json
+      PORT: 3009
+      NODE_ENV: development
+    ports:
+      - "3009:3009"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  discovery-service:
+    build: ./services/discovery-service
+    container_name: shopos-discovery-service
+    environment:
+      <<: *kafka-env
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      PORT: 3010
+    ports:
+      - "3010:3010"
+    depends_on:
+      - elasticsearch
+      - kafka
+
+  analytics-service:
+    build: ./services/analytics-service
+    container_name: shopos-analytics-service
+    environment:
+      <<: *kafka-env
+      PORT: 3014
+    ports:
+      - "3014:3014"
+    depends_on:
+      - kafka
+
+  notification-service:
+    build: ./services/notification-service
+    container_name: shopos-notification-service
+    environment:
+      <<: *kafka-env
+      MONGO_URI: mongodb://admin:admin_password@mongodb:27017/notifications?authSource=admin
+      REDIS_URL: redis://redis:6379
+      PORT: 3013
+      NODE_ENV: development
+    ports:
+      - "3013:3013"
+    depends_on:
+      - mongodb
+      - kafka
+
+  web:
+    build: ./apps/web
+    container_name: shopos-web
+    profiles: ["frontend"]
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+
+volumes:
+  postgres_data:
+  mongodb_data:
+  redis_data:

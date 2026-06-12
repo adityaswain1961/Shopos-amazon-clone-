@@ -1,0 +1,44 @@
+groups:
+  - name: shopos-slo
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(shopos_http_requests_total{status_code=~"5.."}[5m])) by (service)
+          /
+          sum(rate(shopos_http_requests_total[5m])) by (service)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.service }}"
+          description: "More than 5% of requests are failing (SLO breach)."
+
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(shopos_http_request_duration_seconds_bucket[5m])) by (le, service)
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P99 latency above 200ms for {{ $labels.service }}"
+          description: "Critical path SLO: p99 should stay under 200ms."
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus cannot scrape the target."
+
+      - alert: KongHighLatency
+        expr: kong_latency_bucket{le="0.2"} < 0.95
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kong gateway latency degraded"

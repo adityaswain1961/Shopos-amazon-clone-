@@ -1,0 +1,19 @@
+{
+  "name": "@shopos/observability",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "prom-client": "^15.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "typescript": "^5.7.0"
+  }
+}
