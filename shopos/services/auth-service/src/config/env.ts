@@ -6,15 +6,22 @@ const envSchema = z.object({
 
   // MongoDB
   MONGO_URI: z.string().min(1, 'MONGO_URI is required'),
+  MONGO_MAX_POOL_SIZE: z.coerce.number().int().positive().default(50),
 
   // Redis
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
-  // JWT RS256
+  // JWT RS256 — in production JWT_PRIVATE_KEY is mandatory (see tokenService)
   JWT_PRIVATE_KEY: z.string().default(''),
   JWT_PUBLIC_KEY: z.string().default(''),
+  JWT_PREVIOUS_PUBLIC_KEY: z.string().default(''),
   JWT_ACCESS_TOKEN_TTL: z.coerce.number().default(900),       // 15 minutes
   JWT_REFRESH_TOKEN_TTL: z.coerce.number().default(604800),   // 7 days
+
+  // Password hashing. Cost 11 ≈ 4x cheaper than 13 and above OWASP's minimum of 10.
+  // bcrypt is the single most CPU-expensive thing on the login path, so this
+  // directly drives how many auth pods you pay for during a login spike.
+  BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(14).default(11),
 
   // Email
   RESEND_API_KEY: z.string().default(''),
@@ -30,6 +37,13 @@ const envSchema = z.object({
 
   // Frontend
   FRONTEND_URL: z.string().default('http://localhost:3000'),
+
+  // Logging
+  LOG_LEVEL: z.string().default(''),
+  ACCESS_LOG: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   // Rate limiting
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),

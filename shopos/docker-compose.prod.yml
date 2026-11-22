@@ -1,60 +1,133 @@
-# Production-oriented overrides — use with:
+# Production-oriented overrides for a single large VM (or a few) running compose:
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d
-version: '3.8'
+#
+# For real horizontal scale use Kubernetes (infrastructure/helm/shopos). This
+# overlay mainly: requires secrets, routes Postgres traffic through PgBouncer,
+# turns off dev conveniences, and lets you run several replicas per service:
+#   docker compose ... up -d --scale product-service=4 --scale cart-service=2
+
+x-prod-node: &prod-node
+  NODE_ENV: production
+  LOG_LEVEL: info
 
 services:
   postgres:
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    restart: always
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports: !reset []
 
   mongodb:
     environment:
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
-    restart: always
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?set MONGO_PASSWORD}
+    ports: !reset []
 
   redis:
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
-    restart: always
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy volatile-lru --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    ports: !reset []
 
   kafka:
-    restart: always
+    ports: !reset []
+
+  elasticsearch:
+    ports: !reset []
+
+  # Connection pooler: thousands of app connections → a few dozen real
+  # Postgres connections. Transaction mode + prepared-statement support (>=1.21).
+  pgbouncer:
+    image: edoburu/pgbouncer:latest   # pin a digest/tag in your registry
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_USER: shopos_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "5000"
+      DEFAULT_POOL_SIZE: "40"
+      MAX_PREPARED_STATEMENTS: "200"
+    depends_on:
+      postgres: { condition: service_healthy }
 
   kong:
-    restart: always
     environment:
       KONG_LOG_LEVEL: notice
+    ports: !override
+      - "8000:8000"   # admin port 8001 is NOT published in production
 
   auth-service:
-    restart: always
     environment:
-      NODE_ENV: production
-      MONGO_URI: ${MONGO_URI}
-      REDIS_URL: ${REDIS_URL}
-      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
-      OTEL_SERVICE_NAME: auth-service
+      <<: *prod-node
+      MONGO_URI: ${MONGO_URI:?set MONGO_URI}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?auth needs a shared RS256 key in production}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+    ports: !reset []
 
   user-service:
-    restart: always
     environment:
-      NODE_ENV: production
-      OTEL_SERVICE_NAME: user-service
+      <<: *prod-node
+      MONGO_URI: ${MONGO_USERS_URI:?set MONGO_USERS_URI}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports: !reset []
+
+  product-migrate:
+    environment:
+      DATABASE_URL: postgresql://shopos_admin:${POSTGRES_PASSWORD}@postgres:5432/shopos_db?schema=public
 
   product-service:
-    restart: always
     environment:
-      NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL}
-      OTEL_SERVICE_NAME: product-service
+      <<: *prod-node
+      DATABASE_URL: postgresql://shopos_admin:${POSTGRES_PASSWORD}@pgbouncer:5432/shopos_db?schema=public&pgbouncer=true&connection_limit=10
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports: !reset []
+
+  review-service:
+    environment:
+      <<: *prod-node
+      DATABASE_URL: postgresql://shopos_admin:${POSTGRES_PASSWORD}@pgbouncer:5432/shopos_db
+    ports: !reset []
+
+  coupon-service:
+    environment:
+      <<: *prod-node
+      DATABASE_URL: postgresql://shopos_admin:${POSTGRES_PASSWORD}@pgbouncer:5432/shopos_db
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports: !reset []
+
+  notification-service:
+    environment:
+      <<: *prod-node
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports: !reset []
+
+  inventory-service:
+    environment:
+      DATABASE_URL: postgres://shopos_admin:${POSTGRES_PASSWORD}@pgbouncer:5432/shopos_db
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN}
+    ports: !reset []
+
+  cart-service:
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
+    ports: !reset []
 
   order-service:
-    restart: always
     environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://pgbouncer:5432/shopos_db
       SPRING_PROFILES_ACTIVE: prod
+    ports: !reset []
 
   payment-service:
-    restart: always
     environment:
-      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
       ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: Host=pgbouncer;Port=5432;Database=shopos_db;Username=shopos_admin;Password=${POSTGRES_PASSWORD};Maximum Pool Size=30;No Reset On Close=true
+      PAYMENT_MODE: ${PAYMENT_MODE:-stripe}
+    ports: !reset []
+
+  discovery-service:
+    ports: !reset []
+
+  analytics-service:
+    environment:
+      DATABASE_URL: postgresql://shopos_admin:${POSTGRES_PASSWORD}@pgbouncer:5432/shopos_db
+    ports: !reset []

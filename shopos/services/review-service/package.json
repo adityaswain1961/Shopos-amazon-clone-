@@ -14,7 +14,11 @@
     "helmet": "^8.0.0",
     "kafkajs": "^2.2.4",
     "pg": "^8.13.0",
-    "uuid": "^11.0.0"
+    "@shopos/jwt-verifier": "*",
+    "@shopos/observability": "*",
+    "@shopos/shared-types": "*",
+    "zod": "^3.24.0",
+    "@shopos/kafka-client": "*"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

@@ -2,11 +2,12 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
+import compression from 'compression';
 import { env } from './config/env.js';
-import { getPrismaClient, disconnectPrisma } from './config/prisma.js';
+import { getPrismaClient, disconnectPrisma, isDatabaseReady } from './config/prisma.js';
 import { connectRedis, disconnectRedis } from './config/redis.js';
 import { connectKafka, disconnectKafka } from './config/kafka.js';
-import { setupMetrics } from '@shopos/observability';
+import { setupMetrics, registerGracefulShutdown } from '@shopos/observability';
 import { correlationId } from './middleware/correlationId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
@@ -16,69 +17,75 @@ import categoryRoutes from './routes/category.routes.js';
 
 const app = express();
 
-app.use(helmet());
-app.use(cors({ origin: env.FRONTEND_URL, credentials: true }));
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.disable('x-powered-by');
+// Strong ETags let browsers/CDNs revalidate with a cheap 304.
+app.set('etag', 'strong');
+app.set('trust proxy', 1);
 
-if (env.NODE_ENV !== 'test') {
+app.use(helmet());
+app.use(cors({ origin: env.FRONTEND_URL.split(','), credentials: true }));
+// Listing payloads are JSON-heavy; gzip cuts egress (which you pay for) ~70-80%.
+app.use(compression({ threshold: 1024 }));
+app.use(express.json({ limit: '256kb' }));
+
+if (env.NODE_ENV === 'development' || env.ACCESS_LOG) {
   app.use(morgan('short'));
 }
 
 app.use(correlationId);
-const { middleware: metricsMiddleware } = setupMetrics(app, 'product-service');
+
+// Readiness depends on Postgres only: Redis is a cache and the service
+// degrades gracefully without it.
+const { middleware: metricsMiddleware } = setupMetrics(app, 'product-service', {
+  readinessChecks: { postgres: isDatabaseReady },
+});
 app.use(metricsMiddleware);
-app.set('trust proxy', 1);
 
 app.get('/health', (_req, res) => {
-  sendSuccess(res, {
-    status: 'ok',
-    service: 'product-service',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
+  sendSuccess(res, { status: 'ok', service: 'product-service', uptime: process.uptime() });
 });
 
 app.use('/api/v1/products/categories', categoryRoutes);
 app.use('/api/v1/products', productRoutes);
 
-app.use(errorHandler);
-
 app.use((_req, res) => {
   res.status(404).json({ success: false, data: null, error: 'Route not found' });
 });
+app.use(errorHandler);
 
 async function startServer(): Promise<void> {
   try {
-    getPrismaClient();
-    await connectRedis();
+    await getPrismaClient().$connect();
+    await connectRedis().catch((err) =>
+      logger.warn('Redis unavailable at startup; serving uncached', { error: (err as Error).message }),
+    );
     await connectKafka();
 
     const server = app.listen(env.PORT, () => {
-      logger.info(`Product Service running on port ${env.PORT}`);
+      logger.info(`Product Service listening on ${env.PORT}`, { env: env.NODE_ENV });
     });
+    server.keepAliveTimeout = 65_000;
+    server.headersTimeout = 66_000;
 
-    const shutdown = async (signal: string) => {
-      logger.info(`Received ${signal}, shutting down...`);
-      server.close(async () => {
+    registerGracefulShutdown(
+      server,
+      async () => {
         await disconnectKafka();
         await disconnectRedis();
         await disconnectPrisma();
-        process.exit(0);
-      });
-      setTimeout(() => process.exit(1), 10_000);
-    };
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+      },
+      { log: (m) => logger.info(m) },
+    );
   } catch (error) {
-    logger.error('Failed to start product service', { error });
+    logger.error('Failed to start product service', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
     process.exit(1);
   }
 }
 
 if (process.env.NODE_ENV !== 'test') {
-  startServer();
+  void startServer();
 }
 
 export { app };

@@ -2,34 +2,17 @@
 
 | Path | Description |
 |------|-------------|
-| `db/init.sql` | PostgreSQL bootstrap (orders, inventory, payments, etc.) |
-| `kafka/topics.yaml` | Kafka topic catalog |
-| `observability/` | Prometheus, Grafana, Loki, Jaeger, OTel configs |
-| `k8s/` | Raw Kubernetes manifests (namespace, HPA, network policies) |
-| `helm/shopos/` | Helm chart for all microservices |
+| `db/init.sql` | PostgreSQL bootstrap for a **fresh** database (shared tables, hot-path indexes, outbox) |
+| `db/migrations/` | Idempotent upgrades for **existing** databases (`make db-migrate`) |
+| `kafka/topics.yaml` | Topic catalog and saga flow |
+| `kafka/create-topics.sh` | Creates topics + DLQs with explicit partitions (compose `kafka-init`) |
+| `helm/shopos/` | Helm chart: deployments, HPA, PDB, network policy, migration/topic hook jobs |
+| `helm/kong-values.yaml` | Values for the official Kong chart (DB-less, uses `kong/kong.yml`) |
+| `k8s/namespaces/` | Namespace manifest |
+| `k8s/secrets/` | `secrets.example.yaml` template only — never commit real values |
+| `observability/` | Prometheus (+ alerts), Grafana, Loki, Promtail, OTel collector, Alertmanager |
 | `vault/` | Vault policies and secret path documentation |
 | `argocd/` | GitOps Application manifest |
 | `SLO.md` | Availability and latency targets |
 
-## Layout
-
-```
-infrastructure/
-├── observability/
-│   ├── prometheus/     # scrape config + alert rules
-│   ├── grafana/        # datasources + ShopOS dashboard
-│   ├── loki/           # log aggregation
-│   ├── promtail/       # Docker log shipping
-│   ├── otel-collector/ # traces + metrics pipeline
-│   └── alertmanager/   # alert routing
-├── k8s/
-│   ├── namespaces/
-│   ├── configmaps/
-│   ├── secrets/        # secrets.example.yaml only
-│   ├── deployments/
-│   ├── ingress/
-│   ├── hpa/
-│   └── network-policies/
-├── helm/shopos/
-└── vault/
-```
+Capacity planning and the low-cost hosting plan are in [`../docs/SCALING.md`](../docs/SCALING.md).

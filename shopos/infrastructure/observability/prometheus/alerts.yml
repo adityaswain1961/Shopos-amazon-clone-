@@ -36,9 +36,39 @@ groups:
           description: "Prometheus cannot scrape the target."
 
       - alert: KongHighLatency
-        expr: kong_latency_bucket{le="0.2"} < 0.95
+        expr: |
+          histogram_quantile(0.99, sum(rate(kong_request_latency_ms_bucket[5m])) by (le)) > 500
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "Kong gateway latency degraded"
+          summary: "Gateway p99 latency above 500ms"
+          description: "End-to-end p99 through Kong is degraded; check upstream services and HPA headroom."
+
+      - alert: GatewayRateLimiting
+        expr: sum(rate(kong_http_requests_total{code="429"}[5m])) / sum(rate(kong_http_requests_total[5m])) > 0.02
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 2% of requests are being rate limited"
+          description: "Either an attack or limits too tight for real traffic (CGNAT users share IPs)."
+
+  - name: shopos-saga
+    rules:
+      - alert: SagaMessagesDeadLettered
+        expr: increase(shopos_inventory_events_total{outcome="dlq"}[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Inventory saga messages were parked on a DLQ"
+          description: "Orders may be stuck. Inspect <topic>.dlq, fix the cause, then replay."
+
+      - alert: OrdersOutOfStockSpike
+        expr: sum(rate(shopos_inventory_events_total{outcome="out_of_stock"}[10m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many orders failing on stock"
+          description: "Restock popular SKUs or mark them out_of_stock in the catalog."

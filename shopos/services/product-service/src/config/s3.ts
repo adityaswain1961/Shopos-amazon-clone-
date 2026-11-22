@@ -9,6 +9,8 @@ export function getS3Client(): S3Client {
 
   s3Client = new S3Client({
     region: env.AWS_S3_REGION,
+    // Any S3-compatible store: Cloudflare R2 (no egress fees), Backblaze B2, MinIO...
+    ...(env.S3_ENDPOINT ? { endpoint: env.S3_ENDPOINT, forcePathStyle: env.S3_FORCE_PATH_STYLE } : {}),
     ...(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY
       ? {
           credentials: {

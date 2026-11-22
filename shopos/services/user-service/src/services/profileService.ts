@@ -53,9 +53,17 @@ export async function getProfile(userId: string): Promise<IUserProfile> {
   let profile = await UserProfile.findOne({ userId, isDeleted: false });
 
   if (!profile) {
-    // Auto-create profile on first access (user registered via auth-service)
-    profile = await UserProfile.create({ userId });
-    logger.info('Auto-created user profile', { userId });
+    // Auto-create profile on first access (user registered via auth-service).
+    // The frontend often fires several requests at once after login, so two
+    // creates can race — the unique index on userId decides, loser re-reads.
+    try {
+      profile = await UserProfile.create({ userId });
+      logger.info('Auto-created user profile', { userId });
+    } catch (err) {
+      if ((err as { code?: number }).code !== 11000) throw err;
+      profile = await UserProfile.findOne({ userId, isDeleted: false });
+      if (!profile) throw new AppError('Profile not found', 404);
+    }
   }
 
   // Update completion percentage

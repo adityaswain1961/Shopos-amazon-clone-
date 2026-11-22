@@ -14,7 +14,10 @@
     "helmet": "^8.0.0",
     "ioredis": "^5.4.0",
     "pg": "^8.13.0",
-    "zod": "^3.24.0"
+    "zod": "^3.24.0",
+    "@shopos/jwt-verifier": "*",
+    "@shopos/observability": "*",
+    "@shopos/shared-types": "*"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

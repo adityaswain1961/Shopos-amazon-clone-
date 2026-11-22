@@ -1,11 +1,12 @@
-import { API_URL } from './client';
+import { apiFetch } from './client';
 import { getGuestCartId } from '../utils';
 
 export interface RemoteCartItem {
   product_id: string;
   variant_id: string;
   quantity: number;
-  unit_price: number;
+  /** display hint only — the order service prices orders from the catalog */
+  unit_price?: number;
 }
 
 export interface RemoteCart {
@@ -13,38 +14,23 @@ export interface RemoteCart {
   items: RemoteCartItem[];
 }
 
-export async function fetchCart(cartId?: string): Promise<RemoteCart> {
-  const id = cartId ?? getGuestCartId();
-  const res = await fetch(`${API_URL}/api/v1/cart/${id}`, {
-    headers: { 'X-Correlation-Id': crypto.randomUUID() },
-  });
-  if (!res.ok) throw new Error('Failed to load cart');
-  return res.json();
+export function fetchCart(cartId?: string): Promise<RemoteCart> {
+  return apiFetch<RemoteCart>(`/api/v1/cart/${cartId ?? getGuestCartId()}`);
 }
 
-export async function addToRemoteCart(
-  item: RemoteCartItem,
-  cartId?: string,
-): Promise<void> {
-  const id = cartId ?? getGuestCartId();
-  const res = await fetch(`${API_URL}/api/v1/cart/${id}/items`, {
+/** Set one line's quantity (idempotent upsert). */
+export async function upsertRemoteCartItem(item: RemoteCartItem, cartId?: string): Promise<void> {
+  await apiFetch(`/api/v1/cart/${cartId ?? getGuestCartId()}/items`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Correlation-Id': crypto.randomUUID(),
-    },
     body: JSON.stringify(item),
   });
-  if (!res.ok) throw new Error('Failed to add to cart');
 }
 
-export async function removeFromRemoteCart(
-  itemKey: string,
-  cartId?: string,
-): Promise<void> {
-  const id = cartId ?? getGuestCartId();
-  await fetch(`${API_URL}/api/v1/cart/${id}/items/${itemKey}`, {
-    method: 'DELETE',
-    headers: { 'X-Correlation-Id': crypto.randomUUID() },
-  });
+export async function removeRemoteCartItem(productId: string, variantId: string, cartId?: string): Promise<void> {
+  const itemKey = encodeURIComponent(`${productId}:${variantId}`);
+  await apiFetch(`/api/v1/cart/${cartId ?? getGuestCartId()}/items/${itemKey}`, { method: 'DELETE' });
+}
+
+export async function clearRemoteCart(cartId?: string): Promise<void> {
+  await apiFetch(`/api/v1/cart/${cartId ?? getGuestCartId()}`, { method: 'DELETE' });
 }

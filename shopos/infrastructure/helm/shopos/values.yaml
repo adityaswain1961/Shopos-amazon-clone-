@@ -1,89 +1,132 @@
+# ShopOS Helm values (baseline / staging).
+# Production overrides: values-production.yaml. Capacity notes: docs/SCALING.md.
+
 global:
-  imageRegistry: ghcr.io/shopos
+  imageRegistry: ghcr.io/your-org     # CI pushes <registry>/shopos-<service>:<sha>
+  imagePrefix: shopos-
   imageTag: latest
   imagePullPolicy: IfNotPresent
   namespace: shopos
-
+  frontendUrl: https://shop.example.com
   kafka:
     brokers: kafka.shopos.svc.cluster.local:9092
-
+    partitions: 6
+    replication: 1
   auth:
     jwksUrl: http://auth-service:3001/.well-known/jwks.json
-
   otel:
     endpoint: http://otel-collector:4318
+
+# Applied to every service unless the service overrides it.
+defaults:
+  # No CPU *limit* on purpose: CFS throttling causes latency spikes. Requests
+  # drive scheduling and HPA; memory limits stay to contain leaks.
+  resources:
+    requests: { cpu: 100m, memory: 192Mi }
+    limits: { memory: 512Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilization: 65
+  terminationGracePeriodSeconds: 40
+  # Sleep before SIGTERM so endpoints are removed from load balancers first.
+  preStopSleepSeconds: 5
+  livenessPath: /health
+  readinessPath: /ready
+  metricsPath: /metrics
+
+services:
+  auth-service:
+    port: 3001
+    resources:
+      # bcrypt is CPU-bound: give auth real CPU and scale it on CPU
+      requests: { cpu: 250m, memory: 256Mi }
+      limits: { memory: 512Mi }
+  user-service:
+    port: 3002
+    secretEnv:
+      MONGO_URI: MONGO_USERS_URI          # own database, not auth's
+  product-service:
+    port: 3003
+    secretEnv:
+      # Prisma URL carries Prisma-only options (?pgbouncer=true&connection_limit=…)
+      # that pgx / libpq would reject, so it lives under its own key.
+      DATABASE_URL: PRISMA_DATABASE_URL
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { memory: 512Mi }
+  inventory-service:
+    port: 3004
+    resources:
+      requests: { cpu: 100m, memory: 64Mi }
+      limits: { memory: 256Mi }
+  review-service:
+    port: 3005
+  cart-service:
+    port: 3006
+    secretEnv:
+      REDIS_URL: CART_REDIS_URL           # durable Redis (noeviction), not the cache
+    resources:
+      requests: { cpu: 100m, memory: 32Mi }
+      limits: { memory: 128Mi }
+  order-service:
+    port: 3007
+    readinessPath: /actuator/health/readiness
+    metricsPath: /actuator/prometheus
+    startupProbe: true                 # JVM warm-up
+    resources:
+      requests: { cpu: 250m, memory: 512Mi }
+      limits: { memory: 1Gi }
+  payment-service:
+    port: 3008
+    metrics: false
+    resources:
+      requests: { cpu: 150m, memory: 192Mi }
+      limits: { memory: 512Mi }
+  coupon-service:
+    port: 3009
+  discovery-service:
+    port: 3010
+    metrics: false
+    resources:
+      requests: { cpu: 200m, memory: 256Mi }
+      limits: { memory: 512Mi }
+  notification-service:
+    port: 3013
+    autoscaling: { minReplicas: 1, maxReplicas: 4 }
+  analytics-service:
+    port: 3014
+    metrics: false
+    autoscaling: { minReplicas: 1, maxReplicas: 3 }
 
 ingress:
   enabled: true
   className: nginx
   host: api.shopos.example.com
+  # Kong is installed from the official chart (see infrastructure/helm/kong-values.yaml)
+  # into this namespace; the ingress forwards everything to its proxy service.
+  kongService: kong-kong-proxy
+  kongPort: 80
   tls:
     enabled: true
     secretName: shopos-api-tls
+    clusterIssuer: letsencrypt-prod
 
-autoscaling:
+podDisruptionBudget:
   enabled: true
-  minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilization: 70
+  maxUnavailable: 1
 
-services:
-  auth-service:
-    port: 3001
-    replicas: 2
-    metrics: true
-  user-service:
-    port: 3002
-    replicas: 2
-    metrics: true
-  product-service:
-    port: 3003
-    replicas: 2
-    metrics: true
-  inventory-service:
-    port: 3004
-    replicas: 2
-    metrics: true
-  review-service:
-    port: 3005
-    replicas: 2
-    metrics: true
-  cart-service:
-    port: 3006
-    replicas: 2
-    metrics: false
-  order-service:
-    port: 3007
-    replicas: 2
-    metricsPath: /actuator/prometheus
-  payment-service:
-    port: 3008
-    replicas: 2
-    metrics: true
-  coupon-service:
-    port: 3009
-    replicas: 2
-    metrics: true
-  discovery-service:
-    port: 3010
-    replicas: 2
-    metrics: false
-  notification-service:
-    port: 3013
-    replicas: 2
-    metrics: true
-  analytics-service:
-    port: 3014
-    replicas: 2
-    metrics: false
-
-resources:
-  requests:
-    cpu: 100m
-    memory: 256Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
+topologySpread:
+  enabled: true
 
 networkPolicy:
   enabled: true
+  # namespaces allowed to reach backend pods (ingress controller, monitoring)
+  allowNamespaces: [ingress-nginx, monitoring]
+
+jobs:
+  # Pre-install/upgrade hooks
+  productMigrations: true
+  kafkaTopics: true
+  kafkaImage: apache/kafka:3.7.1

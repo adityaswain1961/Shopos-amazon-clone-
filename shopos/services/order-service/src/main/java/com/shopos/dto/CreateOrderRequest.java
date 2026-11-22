@@ -1,26 +1,42 @@
 package com.shopos.dto;
 
-import java.math.BigDecimal;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+
+import java.util.List;
 import java.util.UUID;
 
-public class CreateOrderRequest {
-    private UUID userId;
-    private UUID cartId;
-    private BigDecimal totalAmount;
-    private UUID idempotencyKey;
-    private String sku;
-    private Integer quantity;
+/**
+ * Checkout request. Note what is NOT here: user id (taken from the JWT) and
+ * prices/totals (computed server-side from the catalog). Clients cannot set them.
+ */
+public record CreateOrderRequest(
+    @NotEmpty @Size(max = 50) List<@Valid @NotNull Item> items,
+    @Valid @NotNull Address shippingAddress,
+    @Size(max = 50) String couponCode,
+    @Size(max = 100) String idempotencyKey,
+    @Size(max = 100) String cartId
+) {
 
-    public UUID getUserId() { return userId; }
-    public void setUserId(UUID userId) { this.userId = userId; }
-    public UUID getCartId() { return cartId; }
-    public void setCartId(UUID cartId) { this.cartId = cartId; }
-    public BigDecimal getTotalAmount() { return totalAmount; }
-    public void setTotalAmount(BigDecimal totalAmount) { this.totalAmount = totalAmount; }
-    public UUID getIdempotencyKey() { return idempotencyKey; }
-    public void setIdempotencyKey(UUID idempotencyKey) { this.idempotencyKey = idempotencyKey; }
-    public String getSku() { return sku; }
-    public void setSku(String sku) { this.sku = sku; }
-    public Integer getQuantity() { return quantity; }
-    public void setQuantity(Integer quantity) { this.quantity = quantity; }
+    public record Item(
+        @NotNull UUID productId,
+        UUID variantId,
+        @Min(1) @Max(99) int quantity
+    ) {}
+
+    public record Address(
+        @NotBlank @Size(max = 200) String fullName,
+        @NotBlank @Size(max = 300) String line1,
+        @Size(max = 300) String line2,
+        @NotBlank @Size(max = 100) String city,
+        @Size(max = 100) String state,
+        @NotBlank @Size(max = 20) String postalCode,
+        @Size(max = 2) String country,
+        @NotBlank @Size(max = 20) String phone
+    ) {}
 }

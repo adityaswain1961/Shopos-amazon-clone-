@@ -4,8 +4,8 @@ import { useProducts } from '@/hooks/useProducts';
 import { ProductCard } from './ProductCard';
 import { Skeleton } from '@/components/ui/skeleton';
 
-export function ProductGrid({ status }: { status?: string }) {
-  const { data, isLoading, error } = useProducts(status);
+export function ProductGrid({ categorySlug, sort }: { categorySlug?: string; sort?: string }) {
+  const { data, isLoading, error } = useProducts({ categorySlug, sort });
 
   if (isLoading) {
     return (
@@ -26,8 +26,7 @@ export function ProductGrid({ status }: { status?: string }) {
     );
   }
 
-  const products =
-    data?.filter((p) => !status || p.status === status || p.status === 'published') ?? [];
+  const products = data ?? [];
 
   if (products.length === 0) {
     return (

@@ -1,8 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { CartItem } from '@/lib/types';
-import { addToRemoteCart } from '@/lib/api/cart';
-import { getGuestCartId } from '@/lib/utils';
+import { upsertRemoteCartItem, removeRemoteCartItem, clearRemoteCart } from '@/lib/api/cart';
 
 interface CartState {
   items: CartItem[];
@@ -12,7 +11,20 @@ interface CartState {
   clearCart: () => void;
   totalItems: () => number;
   totalPrice: () => number;
-  syncToServer: () => Promise<void>;
+}
+
+const MAX_QTY = 99;
+
+// The browser cart is the UI source of truth; the server copy (cart-service)
+// is synced one line at a time, fire-and-forget. Only the line that changed
+// is sent — never the whole cart on every click.
+function syncLine(item: CartItem) {
+  upsertRemoteCartItem({
+    product_id: item.productId,
+    variant_id: item.variantId || 'default',
+    quantity: item.quantity,
+    unit_price: item.price,
+  }).catch(() => {});
 }
 
 export const useCartStore = create<CartState>()(
@@ -20,53 +32,45 @@ export const useCartStore = create<CartState>()(
     (set, get) => ({
       items: [],
       addItem: (newItem) => {
-        set((state) => {
-          const existing = state.items.find(
-            (i) => i.productId === newItem.productId && i.variantId === newItem.variantId,
-          );
-          if (existing) {
-            return {
-              items: state.items.map((i) =>
-                i.productId === newItem.productId && i.variantId === newItem.variantId
-                  ? { ...i, quantity: i.quantity + newItem.quantity }
-                  : i,
-              ),
-            };
-          }
-          return { items: [...state.items, newItem] };
-        });
-        get().syncToServer().catch(() => {});
+        const existing = get().items.find(
+          (i) => i.productId === newItem.productId && i.variantId === newItem.variantId,
+        );
+        const next: CartItem = existing
+          ? { ...existing, quantity: Math.min(MAX_QTY, existing.quantity + newItem.quantity) }
+          : { ...newItem, quantity: Math.min(MAX_QTY, newItem.quantity) };
+        set((state) => ({
+          items: existing
+            ? state.items.map((i) => (i === existing ? next : i))
+            : [...state.items, next],
+        }));
+        syncLine(next);
       },
-      removeItem: (productId, variantId) =>
+      removeItem: (productId, variantId) => {
         set((state) => ({
-          items: state.items.filter(
-            (i) => !(i.productId === productId && i.variantId === variantId),
-          ),
-        })),
-      updateQuantity: (productId, variantId, quantity) =>
+          items: state.items.filter((i) => !(i.productId === productId && i.variantId === variantId)),
+        }));
+        removeRemoteCartItem(productId, variantId || 'default').catch(() => {});
+      },
+      updateQuantity: (productId, variantId, quantity) => {
+        const q = Math.max(1, Math.min(MAX_QTY, quantity));
+        let changed: CartItem | undefined;
         set((state) => ({
-          items: state.items.map((i) =>
-            i.productId === productId && i.variantId === variantId
-              ? { ...i, quantity: Math.max(1, quantity) }
-              : i,
-          ),
-        })),
-      clearCart: () => set({ items: [] }),
+          items: state.items.map((i) => {
+            if (i.productId === productId && i.variantId === variantId) {
+              changed = { ...i, quantity: q };
+              return changed;
+            }
+            return i;
+          }),
+        }));
+        if (changed) syncLine(changed);
+      },
+      clearCart: () => {
+        set({ items: [] });
+        clearRemoteCart().catch(() => {});
+      },
       totalItems: () => get().items.reduce((acc, item) => acc + item.quantity, 0),
-      totalPrice: () =>
-        get().items.reduce((acc, item) => acc + item.price * item.quantity, 0),
-      syncToServer: async () => {
-        const cartId = getGuestCartId();
-        const items = get().items;
-        for (const item of items) {
-          await addToRemoteCart({
-            product_id: item.productId,
-            variant_id: item.variantId || 'default',
-            quantity: item.quantity,
-            unit_price: item.price,
-          }, cartId);
-        }
-      },
+      totalPrice: () => get().items.reduce((acc, item) => acc + item.price * item.quantity, 0),
     }),
     { name: 'shopos-cart' },
   ),

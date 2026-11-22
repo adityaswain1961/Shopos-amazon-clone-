@@ -3,127 +3,79 @@ import helmet from 'helmet';
 import cors from 'cors';
 import morgan from 'morgan';
 import { env } from './config/env.js';
-import { connectDatabase, disconnectDatabase } from './config/db.js';
-import { connectRedis, disconnectRedis } from './config/redis.js';
+import { connectDatabase, disconnectDatabase, isDatabaseReady } from './config/db.js';
+import { connectRedis, disconnectRedis, isRedisReady } from './config/redis.js';
 import { connectKafka, disconnectKafka } from './config/kafka.js';
-import { setupMetrics } from '@shopos/observability';
+import { setupMetrics, registerGracefulShutdown } from '@shopos/observability';
 import { correlationId } from './middleware/correlationId.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { sendSuccess } from './utils/apiResponse.js';
 import { logger } from './utils/logger.js';
 import userRoutes from './routes/user.routes.js';
 
-// ─── Create Express App ─────────────────────────────────────────────
-
 const app = express();
 
-// ─── Global Middleware ──────────────────────────────────────────────
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
 
 app.use(helmet());
-app.use(cors({
-  origin: env.FRONTEND_URL,
-  credentials: true,
-}));
+app.use(cors({ origin: env.FRONTEND_URL.split(','), credentials: true }));
 app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 
-// Morgan HTTP logging — skip in test environment
-if (env.NODE_ENV !== 'test') {
+if (env.NODE_ENV === 'development' || env.ACCESS_LOG) {
   app.use(morgan('short'));
 }
 
-// Correlation ID on every request
 app.use(correlationId);
 
-const { middleware: metricsMiddleware } = setupMetrics(app, 'user-service');
+const { middleware: metricsMiddleware } = setupMetrics(app, 'user-service', {
+  readinessChecks: { mongo: isDatabaseReady, redis: isRedisReady },
+});
 app.use(metricsMiddleware);
 
-// Trust proxy (behind Kong / load balancer)
-app.set('trust proxy', 1);
-
-// ─── Health Check ───────────────────────────────────────────────────
-
 app.get('/health', (_req, res) => {
-  sendSuccess(res, {
-    status: 'ok',
-    service: 'user-service',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
+  sendSuccess(res, { status: 'ok', service: 'user-service', uptime: process.uptime() });
 });
-
-// ─── Routes ─────────────────────────────────────────────────────────
 
 app.use('/api/v1/users', userRoutes);
 
-// ─── Global Error Handler ───────────────────────────────────────────
-
-app.use(errorHandler);
-
-// ─── 404 Handler ────────────────────────────────────────────────────
-
 app.use((_req, res) => {
-  res.status(404).json({
-    success: false,
-    data: null,
-    error: 'Route not found',
-  });
+  res.status(404).json({ success: false, data: null, error: 'Route not found' });
 });
-
-// ─── Server Startup ─────────────────────────────────────────────────
+app.use(errorHandler);
 
 async function startServer(): Promise<void> {
   try {
-    // 1. Connect to MongoDB
     await connectDatabase();
-
-    // 2. Connect to Redis
     await connectRedis();
-
-    // 3. Connect Kafka producer
     await connectKafka();
 
-    // 4. Start HTTP server
     const server = app.listen(env.PORT, () => {
-      logger.info(`🚀 User Service running on port ${env.PORT}`, {
-        env: env.NODE_ENV,
-        port: env.PORT,
-      });
+      logger.info(`User Service listening on ${env.PORT}`, { env: env.NODE_ENV });
     });
+    server.keepAliveTimeout = 65_000;
+    server.headersTimeout = 66_000;
 
-    // ─── Graceful Shutdown ────────────────────────────────────────
-
-    const shutdown = async (signal: string) => {
-      logger.info(`Received ${signal}. Starting graceful shutdown...`);
-
-      server.close(async () => {
-        logger.info('HTTP server closed');
+    registerGracefulShutdown(
+      server,
+      async () => {
         await disconnectKafka();
         await disconnectRedis();
         await disconnectDatabase();
-        logger.info('All connections closed. Exiting.');
-        process.exit(0);
-      });
-
-      // Force shutdown after 10 seconds
-      setTimeout(() => {
-        logger.error('Graceful shutdown timed out. Forcing exit.');
-        process.exit(1);
-      }, 10_000);
-    };
-
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+      },
+      { log: (m) => logger.info(m) },
+    );
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    logger.error('Failed to start user service', { error: message });
+    logger.error('Failed to start user service', {
+      error: error instanceof Error ? error.message : 'Unknown error',
+    });
     process.exit(1);
   }
 }
 
-// Only start the server if this file is run directly (not imported in tests)
 if (process.env.NODE_ENV !== 'test') {
-  startServer();
+  void startServer();
 }
 
 export { app };

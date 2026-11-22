@@ -1,15 +1,22 @@
 [package]
 name = "cart-service"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+# Must match the Docker builder image (rust:1.85). Cargo.lock is resolved
+# against this so the image never pulls a crate needing a newer compiler.
+rust-version = "1.85"
 
 [dependencies]
 axum = "0.7.5"
 tokio = { version = "1.37.0", features = ["full"] }
-redis = { version = "0.25.3", features = ["tokio-comp", "json"] }
+# connection-manager: one multiplexed, auto-reconnecting connection shared by all requests
+redis = { version = "0.25.3", features = ["tokio-comp", "connection-manager"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.8.0", features = ["v4", "serde"] }
-dotenvy = "0.15.7"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

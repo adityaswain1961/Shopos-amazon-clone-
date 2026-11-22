@@ -1,0 +1,17 @@
+# Keep the build context small: it is uploaded on every `docker build`.
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/target
+**/bin
+**/obj
+**/__pycache__
+**/*.log
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.github
+infrastructure/observability
+loadtest

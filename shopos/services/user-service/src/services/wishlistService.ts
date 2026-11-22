@@ -3,6 +3,8 @@ import { AppError } from '../utils/appError.js';
 import { logger } from '../utils/logger.js';
 import type { CreateWishlistInput, UpdateWishlistInput } from '../validators/user.validators.js';
 
+const MAX_WISHLIST_ITEMS = 500;
+
 // ─── List Wishlists ─────────────────────────────────────────────────
 
 export async function listWishlists(userId: string) {
@@ -69,6 +71,11 @@ export async function addItem(
   const wishlist = await Wishlist.findOne({ _id: wishlistId, userId });
   if (!wishlist) {
     throw new AppError('Wishlist not found', 404);
+  }
+
+  // Bound document size: unbounded arrays make every read/write slower.
+  if (wishlist.items.length >= MAX_WISHLIST_ITEMS) {
+    throw new AppError(`A wishlist can hold at most ${MAX_WISHLIST_ITEMS} items`, 400);
   }
 
   // Prevent duplicate products

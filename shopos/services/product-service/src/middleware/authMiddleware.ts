@@ -30,7 +30,11 @@ async function verifyToken(token: string) {
   }
 
   if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(env.AUTH_JWKS_URL));
+    jwks = createRemoteJWKSet(new URL(env.AUTH_JWKS_URL), {
+      cacheMaxAge: 10 * 60 * 1000,
+      cooldownDuration: 30 * 1000,
+      timeoutDuration: 3000,
+    });
   }
   return jwtVerify(token, jwks, {
     issuer: 'shopos-auth-service',
@@ -70,6 +74,30 @@ export async function authMiddleware(
     logger.debug('JWT verification failed', { error: message });
     sendError(res, 'Invalid or expired token', 401);
   }
+}
+
+/**
+ * Attach req.user when a valid Bearer token is present, but never reject:
+ * used on public endpoints that show extra data to owners/admins.
+ */
+export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    try {
+      const { payload } = await verifyToken(authHeader.substring(7));
+      req.user = {
+        sub: payload.sub as string,
+        email: payload['email'] as string,
+        roles: (payload['roles'] as JwtPayload['roles']) ?? [],
+        permissions: (payload['permissions'] as string[]) ?? [],
+        iat: payload.iat as number,
+        exp: payload.exp as number,
+      };
+    } catch {
+      /* treat as anonymous */
+    }
+  }
+  next();
 }
 
 export function requireRoles(...roles: string[]) {

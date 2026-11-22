@@ -1,125 +1,86 @@
 # ShopOS
 
-Amazon-scale e-commerce microservices monorepo.
+E-commerce platform built as polyglot microservices (Node/TypeScript, Go, Rust, Java, C#, Python) behind a Kong gateway, designed to scale horizontally and run cheaply.
 
-## Quick start (Docker)
+- **Scaling and cost plan (start here):** [docs/SCALING.md](docs/SCALING.md)
+- **SLOs and alerts:** [infrastructure/SLO.md](infrastructure/SLO.md)
+
+## Quick start
 
 ```bash
 cd shopos
-cp .env.example .env   # edit passwords before production
-docker compose up -d --build
+cp .env.example .env          # defaults work for local dev
+make up                       # API gateway → http://localhost:8000
+make up-web                   # + storefront → http://localhost:3000
 ```
 
-API Gateway: http://localhost:8000
+On first start, compose runs `kafka-init` (creates topics) and `product-migrate` (Prisma migrations) before the services.
 
-| Service | Port | Health | Metrics |
-|---------|------|--------|---------|
-| Kong Gateway | 8000 / 8001 (admin) | `/health` via kong health | `:8001/metrics` |
-| Auth | 3001 | `/health` | `/metrics` |
-| User | 3002 | `/health` | `/metrics` |
-| Product | 3003 | `/health` | `/metrics` |
-| Inventory | 3004 | `/health` | `/metrics` |
-| Review | 3005 | `/health` | — |
-| Cart | 3006 | `/health` | — |
-| Order | 3007 | `/health` | `/actuator/prometheus` |
-| Payment | 3008 | `/health` | `/metrics` |
-| Coupon | 3009 | `/health` | — |
-| Search (discovery) | 3010 | `/health` | — |
-| Notification | 3013 | `/health` | — |
-| Analytics / AI Help | 3014 | `/health` | — |
+| Service | Port | Language | Store | Health / Ready |
+|---|---|---|---|---|
+| Kong gateway | 8000 | — | — | `kong health` |
+| auth | 3001 | Node | MongoDB, Redis | `/health`, `/ready` |
+| user | 3002 | Node | MongoDB, Redis | `/health`, `/ready` |
+| product | 3003 | Node (Prisma) | Postgres, Redis | `/health`, `/ready` |
+| inventory | 3004 | Go | Postgres | `/health`, `/ready` |
+| review | 3005 | Node | Postgres | `/health`, `/ready` |
+| cart | 3006 | Rust | Redis | `/health`, `/ready` |
+| order | 3007 | Java 21 (Spring) | Postgres | `/health`, `/actuator/health/readiness` |
+| payment | 3008 | C# (.NET 8) | Postgres | `/health`, `/ready` |
+| coupon | 3009 | Node | Postgres, Redis | `/health`, `/ready` |
+| discovery (search) | 3010 | Python | Elasticsearch | `/health`, `/ready` |
+| notification | 3013 | Node | Redis | `/health`, `/ready` |
+| analytics / AI help | 3014 | Python | Postgres | `/health`, `/ready` |
 
-## Observability stack
+## Checkout saga
 
-Start Prometheus, Grafana, Loki, Jaeger, and OpenTelemetry Collector:
+Orchestrated by order-service; all events are keyed by `orderId` and every handler is idempotent.
 
-```bash
-docker compose -f docker-compose.yml -f docker-compose.observability.yml --profile observability up -d
-# or
-npm run observability:up
+1. `POST /api/v1/orders` (JWT + `Idempotency-Key`). Prices come from the catalog, never from the client. The order and `order.created` are committed together via the **transactional outbox**.
+2. inventory reserves stock (all-or-nothing) → `inventory.confirmed` or `inventory.failed`.
+3. order → `payment.initiate` (server-computed amount) → payment → `payment.completed` / `payment.failed`.
+4. order → `order.confirmed` (inventory commits stock; notification emails) or `inventory.release` + `order.cancelled`.
+5. Abandoned payments time out after 20 minutes. A payment that arrives for an already-cancelled order is refunded automatically.
+
+`PAYMENT_MODE=mock` (dev default) approves every payment instantly. Production requires `stripe`.
+
+## Repository layout
+
+```
+apps/web                    Next.js 15 storefront (ISR product pages)
+services/*                  microservices (see table)
+packages/*                  shared TS: types, kafka-client, observability, jwt-verifier
+docker/node-service.Dockerfile   one image recipe for all Node services
+kong/kong.yml               gateway: CORS, rate limits, micro-cache, routing
+infrastructure/db           init.sql (fresh DB) + migrations/ (existing DB)
+infrastructure/kafka        topic catalog + create-topics.sh
+infrastructure/helm         Helm chart (+ kong-values.yaml for the Kong chart)
+infrastructure/observability  Prometheus, Grafana, Loki, OTel configs
+loadtest/storefront.js      k6 traffic model with SLO thresholds
 ```
 
-| UI | URL | Default login |
-|----|-----|----------------|
-| Grafana | http://localhost:3030 | admin / `shopos_grafana` |
-| Prometheus | http://localhost:9090 | — |
-| Jaeger | http://localhost:16686 | — |
-| Alertmanager | http://localhost:9093 | — |
-
-SLOs and alert rules: `infrastructure/SLO.md`, `infrastructure/observability/prometheus/alerts.yml`.
-
-## Production compose
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d
-```
-
-Secrets must come from `.env` (dev) or **HashiCorp Vault** / K8s Sealed Secrets (prod). See `infrastructure/vault/README.md`.
-
-## Kubernetes & Helm
-
-```bash
-kubectl apply -f infrastructure/k8s/namespaces/
-kubectl apply -f infrastructure/k8s/configmaps/
-# Create secrets from infrastructure/k8s/secrets/secrets.example.yaml (do not commit real values)
-
-helm upgrade --install shopos ./infrastructure/helm/shopos \
-  --namespace shopos --create-namespace \
-  -f ./infrastructure/helm/shopos/values.yaml
-```
-
-Network policies (default-deny ingress): `infrastructure/k8s/network-policies/`.
-
-## CI/CD
-
-- **CI** (`.github/workflows/ci.yml`): lint, test Node services, build & push images, Trivy scan.
-- **Deploy** (`.github/workflows/deploy.yml`): Helm upgrade to cluster (requires `KUBE_CONFIG` secret).
-
-## Saga flow (checkout)
-
-1. `POST /api/v1/orders` → publishes `order.created`
-2. Inventory consumes → reserves stock → `inventory.confirmed`
-3. Order saga → `payment.initiate`
-4. Payment consumes → `payment.completed` or `payment.failed`
-5. Order saga → `order.confirmed` or `inventory.release` (compensation)
-6. Notification consumes → emails
-
-## Kong gateway hardening
-
-- `X-Correlation-Id` injected on every request
-- Global rate limiting (300 req/min; auth routes 60 req/min)
-- Prometheus metrics on admin port `:8001`
-
-## Shared packages
-
-| Package | Purpose |
-|---------|---------|
-| `@shopos/shared-types` | API + Kafka envelopes |
-| `@shopos/kafka-client` | Event builder/publisher |
-| `@shopos/observability` | Prometheus metrics + `/ready` |
-| `@shopos/jwt-verifier` | JWKS JWT middleware |
-
-## Frontend (Next.js)
-
-```bash
-cd apps/web
-cp .env.local.example .env.local
-npm install
-npm run dev
-```
-
-Open http://localhost:3000 — API calls go to Kong (`NEXT_PUBLIC_API_URL`).
-
-## Local dev (Node services)
+## Development
 
 ```bash
 npm install
-npm run build:shared-types
-npm run build:observability
-docker compose up -d postgres mongodb redis kafka
-npm run dev:auth
-npm run dev:product
+npm run build:packages        # shared workspace packages
+npm run build:services        # type-check / compile all Node services
+npm test                      # auth, user, product test suites
+make infra                    # just the datastores + Kafka
+npm run dev:product           # run one service locally
 ```
 
-## Database
+CI (`.github/workflows/ci.yml` at the repo root) compiles every language: Node, Next.js, Go, Rust, Java, .NET and Python. It also lints and renders the Helm chart, then builds and pushes images.
 
-PostgreSQL init: `infrastructure/db/init.sql`. Product schema: `services/product-service/prisma/schema.prisma`.
+## Production
+
+- **Kubernetes:** see the rollout checklist in [docs/SCALING.md](docs/SCALING.md#6-rollout-checklist).
+- **Single host:** `docker compose -f docker-compose.yml -f docker-compose.prod.yml --env-file .env up -d`. This adds PgBouncer, requires secrets, and hides internal ports.
+- **Secrets:** `JWT_PRIVATE_KEY` (shared by all auth replicas), `INTERNAL_API_TOKEN`, DB passwords, and Stripe keys. Template: `infrastructure/k8s/secrets/secrets.example.yaml`.
+- **Existing databases:** `make db-migrate DATABASE_URL=...` applies `infrastructure/db/migrations/*.sql` and Prisma migrations.
+
+## Observability
+
+```bash
+npm run observability:up      # Prometheus :9090, Grafana :3030, Jaeger :16686, Alertmanager :9093
+```

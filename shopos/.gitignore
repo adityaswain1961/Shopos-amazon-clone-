@@ -74,3 +74,7 @@ bin/
 *.bak
 *.tmp
 .cache/
+
+# Private keys (e.g. from `make jwt-key`)
+*.pem
+*.key

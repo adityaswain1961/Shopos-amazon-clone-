@@ -9,12 +9,25 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
-  const statusCode = err.statusCode || 500;
+  // Map well-known Prisma errors to client errors instead of 500s.
+  const code = (err as { code?: string }).code;
+  let statusCode = err.statusCode || 500;
+  if (code === 'P2002') {
+    statusCode = 409;
+    err.message = 'A product with this slug or SKU already exists';
+  } else if (code === 'P2025') {
+    statusCode = 404;
+    err.message = 'Not found';
+  } else if (code === 'P2003') {
+    statusCode = 400;
+    err.message = 'Referenced record (e.g. category) does not exist';
+  }
   const message = statusCode === 500 && env.NODE_ENV === 'production'
     ? 'Internal server error'
     : err.message;
 
-  logger.error('Request error', {
+  const log = statusCode >= 500 ? logger.error.bind(logger) : logger.warn.bind(logger);
+  log('Request error', {
     correlationId: req.correlationId,
     method: req.method,
     path: req.path,

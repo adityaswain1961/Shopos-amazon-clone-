@@ -40,7 +40,11 @@ async function verifyToken(token: string) {
 
   // Remote JWKS verification (production mode)
   if (!jwks) {
-    jwks = createRemoteJWKSet(new URL(env.AUTH_JWKS_URL));
+    jwks = createRemoteJWKSet(new URL(env.AUTH_JWKS_URL), {
+      cacheMaxAge: 10 * 60 * 1000,
+      cooldownDuration: 30 * 1000,
+      timeoutDuration: 3000,
+    });
   }
   return jwtVerify(token, jwks, {
     issuer: 'shopos-auth-service',

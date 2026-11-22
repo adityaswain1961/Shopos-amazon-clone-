@@ -6,6 +6,7 @@ const envSchema = z.object({
 
   // MongoDB
   MONGO_URI: z.string().min(1, 'MONGO_URI is required'),
+  MONGO_MAX_POOL_SIZE: z.coerce.number().int().positive().default(50),
 
   // Redis
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
@@ -19,6 +20,12 @@ const envSchema = z.object({
   AWS_S3_REGION: z.string().default('ap-south-1'),
   AWS_ACCESS_KEY_ID: z.string().default(''),
   AWS_SECRET_ACCESS_KEY: z.string().default(''),
+  // S3-compatible endpoint, e.g. https://<account>.r2.cloudflarestorage.com (empty = AWS S3)
+  S3_ENDPOINT: z.string().default(''),
+  S3_FORCE_PATH_STYLE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   // CDN
   CDN_BASE_URL: z.string().default('https://cdn.shopos.dev'),
@@ -29,6 +36,13 @@ const envSchema = z.object({
 
   // Frontend
   FRONTEND_URL: z.string().default('http://localhost:3000'),
+
+  // Logging
+  LOG_LEVEL: z.string().default(''),
+  ACCESS_LOG: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   // Rate limiting
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),

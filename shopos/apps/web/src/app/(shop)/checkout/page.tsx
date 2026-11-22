@@ -1,46 +1,62 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useCartStore } from '@/store/useCartStore';
 import { useAuthStore } from '@/store/authStore';
 import { createOrder } from '@/lib/api/orders';
 import { getGuestCartId, formatPrice } from '@/lib/utils';
+import type { ShippingAddress } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+
+const REQUIRED: Array<keyof ShippingAddress> = ['fullName', 'line1', 'city', 'postalCode', 'phone'];
 
 export default function CheckoutPage() {
   const router = useRouter();
   const items = useCartStore((s) => s.items);
   const totalPrice = useCartStore((s) => s.totalPrice());
   const clearCart = useCartStore((s) => s.clearCart);
-  const user = useAuthStore((s) => s.user);
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated());
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [address, setAddress] = useState({
+  const [couponCode, setCouponCode] = useState('');
+  const [address, setAddress] = useState<ShippingAddress>({
     fullName: '',
     line1: '',
     city: '',
     postalCode: '',
     phone: '',
+    country: 'IN',
   });
 
+  // One idempotency key per checkout attempt: a double click or a retry after
+  // a network timeout returns the SAME order instead of placing two.
+  const idempotencyKey = useRef<string>(crypto.randomUUID());
+
   async function handlePlaceOrder() {
-    if (!isAuthenticated || !user) {
+    if (!isAuthenticated) {
       router.push('/login?redirect=/checkout');
       return;
     }
+    const missing = REQUIRED.filter((k) => !String(address[k] ?? '').trim());
+    if (missing.length) {
+      setError('Please fill in all shipping fields.');
+      return;
+    }
+
     setLoading(true);
     setError('');
     try {
       const order = await createOrder({
-        userId: user.id,
+        items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity })),
+        shippingAddress: address,
+        couponCode: couponCode.trim() || undefined,
         cartId: getGuestCartId(),
-        totalAmount: totalPrice,
+        idempotencyKey: idempotencyKey.current,
       });
       clearCart();
       router.push(`/account/orders/${order.id}`);
@@ -62,6 +78,15 @@ export default function CheckoutPage() {
     );
   }
 
+  const field = (key: keyof ShippingAddress, placeholder: string, extra?: Partial<React.InputHTMLAttributes<HTMLInputElement>>) => (
+    <Input
+      placeholder={placeholder}
+      value={address[key] ?? ''}
+      onChange={(e) => setAddress({ ...address, [key]: e.target.value })}
+      {...extra}
+    />
+  );
+
   return (
     <div className="container mx-auto max-w-4xl px-4 py-8">
       <h1 className="text-3xl font-bold mb-8">Checkout</h1>
@@ -81,55 +106,36 @@ export default function CheckoutPage() {
             <CardTitle>Shipping address</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Input
-              placeholder="Full name"
-              value={address.fullName}
-              onChange={(e) => setAddress({ ...address, fullName: e.target.value })}
-            />
-            <Input
-              placeholder="Address line"
-              value={address.line1}
-              onChange={(e) => setAddress({ ...address, line1: e.target.value })}
-            />
+            {field('fullName', 'Full name', { autoComplete: 'name', maxLength: 200 })}
+            {field('line1', 'Address line', { autoComplete: 'address-line1', maxLength: 300 })}
             <div className="grid grid-cols-2 gap-3">
-              <Input
-                placeholder="City"
-                value={address.city}
-                onChange={(e) => setAddress({ ...address, city: e.target.value })}
-              />
-              <Input
-                placeholder="Postal code"
-                value={address.postalCode}
-                onChange={(e) => setAddress({ ...address, postalCode: e.target.value })}
-              />
+              {field('city', 'City', { autoComplete: 'address-level2', maxLength: 100 })}
+              {field('postalCode', 'Postal code', { autoComplete: 'postal-code', maxLength: 20 })}
             </div>
-            <Input
-              placeholder="Phone"
-              value={address.phone}
-              onChange={(e) => setAddress({ ...address, phone: e.target.value })}
-            />
+            {field('phone', 'Phone', { autoComplete: 'tel', inputMode: 'tel', maxLength: 20 })}
           </CardContent>
         </Card>
 
         <Card className="h-fit">
           <CardHeader>
-            <CardTitle>Payment</CardTitle>
+            <CardTitle>Summary</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Demo checkout — places order via saga (inventory → payment).
-            </p>
+            <Input
+              placeholder="Coupon code (optional)"
+              value={couponCode}
+              onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+              maxLength={50}
+            />
             <div className="flex justify-between font-semibold text-lg border-t border-border pt-4">
-              <span>Total</span>
+              <span>Estimated total</span>
               <span>{formatPrice(totalPrice)}</span>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Final prices and discounts are confirmed by the server when you place the order.
+            </p>
             {error && <p className="text-sm text-red-400">{error}</p>}
-            <Button
-              className="w-full"
-              size="lg"
-              disabled={loading || !isAuthenticated}
-              onClick={handlePlaceOrder}
-            >
+            <Button className="w-full" size="lg" disabled={loading || !isAuthenticated} onClick={handlePlaceOrder}>
               {loading ? 'Placing order…' : 'Place order'}
             </Button>
           </CardContent>

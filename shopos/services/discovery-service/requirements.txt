@@ -1,6 +1,6 @@
 fastapi==0.110.1
-uvicorn==0.29.0
-elasticsearch==8.13.0
+uvicorn[standard]==0.29.0
+elasticsearch[async]==8.13.0
 confluent-kafka==2.3.0
 pydantic==2.6.4
 python-dotenv==1.0.1

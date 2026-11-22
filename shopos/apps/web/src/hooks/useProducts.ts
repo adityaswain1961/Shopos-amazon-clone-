@@ -3,10 +3,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { fetchProducts, fetchProduct } from '@/lib/api/products';
 
-export function useProducts(status?: string) {
+/** Published products, newest first (the API only returns published items to shoppers). */
+export function useProducts(params?: { categorySlug?: string; sort?: string; limit?: number }) {
   return useQuery({
-    queryKey: ['products', status ?? 'all'],
-    queryFn: () => fetchProducts({ status, limit: 50 }),
+    queryKey: ['products', params ?? {}],
+    queryFn: () => fetchProducts({ limit: 24, ...params }),
     staleTime: 60_000,
   });
 }

@@ -1,0 +1,56 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+concurrency:
+  group: deploy-${{ inputs.environment || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    environment: ${{ inputs.environment || 'staging' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-helm@v4
+
+      - name: Configure kubeconfig
+        run: echo "$KUBE_CONFIG" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+
+      - name: Update Kong declarative config
+        run: |
+          export KUBECONFIG=$RUNNER_TEMP/kubeconfig
+          kubectl -n shopos create configmap kong-declarative \
+            --from-file=kong.yml=shopos/kong/kong.yml --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: "Helm upgrade (atomic: rolls back automatically if pods don't become ready)"
+        run: |
+          export KUBECONFIG=$RUNNER_TEMP/kubeconfig
+          EXTRA_VALUES=""
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            EXTRA_VALUES="-f ./shopos/infrastructure/helm/shopos/values-production.yaml"
+          fi
+          helm upgrade --install shopos ./shopos/infrastructure/helm/shopos \
+            --namespace shopos --create-namespace \
+            -f ./shopos/infrastructure/helm/shopos/values.yaml $EXTRA_VALUES \
+            --set global.imageRegistry=ghcr.io/${{ github.repository_owner }} \
+            --set global.imageTag=${{ github.event.workflow_run.head_sha || github.sha }} \
+            --atomic --timeout 15m

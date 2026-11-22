@@ -1,7 +1,9 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PaymentService.Models;
 using PaymentService.Services;
+using Stripe;
 
 namespace PaymentService.Controllers;
 
@@ -9,35 +11,106 @@ namespace PaymentService.Controllers;
 [Route("api/v1/payments")]
 public class PaymentsController : ControllerBase
 {
-    private readonly PaymentDbContext _db;
-    private readonly StripeService _stripe;
+    private static readonly string[] StaffRoles = { "admin", "super_admin", "support" };
 
-    public PaymentsController(PaymentDbContext db, StripeService stripe)
+    private readonly PaymentDbContext _db;
+    private readonly PaymentProcessor _processor;
+    private readonly IConfiguration _config;
+    private readonly ILogger<PaymentsController> _log;
+
+    public PaymentsController(PaymentDbContext db, PaymentProcessor processor, IConfiguration config, ILogger<PaymentsController> log)
     {
         _db = db;
-        _stripe = stripe;
+        _processor = processor;
+        _config = config;
+        _log = log;
     }
 
-    [HttpPost("intent")]
-    public async Task<IActionResult> CreateIntent([FromBody] CreateIntentRequest req)
+    /// <summary>
+    /// Payment status for an order (the checkout page polls this). While the
+    /// payment awaits the customer it also returns the Stripe client secret,
+    /// which the frontend passes to Stripe.js to confirm the payment.
+    /// </summary>
+    [Authorize]
+    [HttpGet("{orderId:guid}")]
+    public async Task<IActionResult> GetByOrder(Guid orderId, CancellationToken ct)
     {
-        var amount = req.Amount > 0 ? (long)(req.Amount * 100) : 10000;
-        var intent = await _stripe.CreatePaymentIntentAsync(amount, req.Currency ?? "inr");
-        return Ok(new { success = true, data = new { clientSecret = intent.ClientSecret ?? intent.Id, intentId = intent.Id } });
+        var payment = await _db.Payments.AsNoTracking().FirstOrDefaultAsync(p => p.OrderId == orderId, ct);
+        var sub = User.FindFirst("sub")?.Value;
+        var isStaff = User.FindAll("roles").Any(r => StaffRoles.Contains(r.Value));
+
+        if (payment == null || (payment.UserId != sub && !isStaff))
+        {
+            // 404 rather than 403 so other users' order ids can't be probed
+            return NotFound(new { success = false, data = (object?)null, error = "Payment not found" });
+        }
+
+        var awaitingCustomer = payment.Status == PaymentStatus.RequiresPaymentMethod;
+        Response.Headers.CacheControl = "private, no-store";
+        return Ok(new
+        {
+            success = true,
+            error = (string?)null,
+            data = new
+            {
+                orderId = payment.OrderId,
+                status = payment.Status,
+                amount = payment.Amount,
+                currency = payment.Currency,
+                provider = payment.Provider,
+                clientSecret = awaitingCustomer ? payment.ClientSecret : null,
+                publishableKey = awaitingCustomer ? _config["STRIPE_PUBLISHABLE_KEY"] : null,
+            },
+        });
     }
 
-    [HttpGet("{orderId}")]
-    public async Task<IActionResult> GetByOrder(string orderId)
+    /// <summary>
+    /// Stripe webhook (configure in the Stripe dashboard → /api/v1/payments/webhooks/stripe).
+    /// The signature is verified with STRIPE_WEBHOOK_SECRET; unsigned calls are rejected.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("webhooks/stripe")]
+    public async Task<IActionResult> StripeWebhook(CancellationToken ct)
     {
-        var payment = await _db.Payments.FirstOrDefaultAsync(p => p.OrderId == orderId);
-        if (payment == null) return NotFound(new { success = false, error = "Payment not found" });
-        return Ok(new { success = true, data = payment });
-    }
-}
+        var secret = _config["STRIPE_WEBHOOK_SECRET"];
+        if (string.IsNullOrEmpty(secret))
+        {
+            return NotFound();
+        }
 
-public class CreateIntentRequest
-{
-    public string OrderId { get; set; } = "";
-    public decimal Amount { get; set; }
-    public string? Currency { get; set; }
+        string json;
+        using (var reader = new StreamReader(Request.Body))
+        {
+            json = await reader.ReadToEndAsync(ct);
+        }
+
+        Event stripeEvent;
+        try
+        {
+            stripeEvent = EventUtility.ConstructEvent(
+                json, Request.Headers["Stripe-Signature"], secret, throwOnApiVersionMismatch: false);
+        }
+        catch (StripeException ex)
+        {
+            _log.LogWarning("Rejected Stripe webhook: {Message}", ex.Message);
+            return BadRequest();
+        }
+
+        if (stripeEvent.Data.Object is PaymentIntent intent)
+        {
+            switch (stripeEvent.Type)
+            {
+                case "payment_intent.succeeded":
+                    await _processor.HandleProviderResultAsync(intent.Id, true, null, ct);
+                    break;
+                case "payment_intent.payment_failed":
+                case "payment_intent.canceled":
+                    await _processor.HandleProviderResultAsync(
+                        intent.Id, false, intent.LastPaymentError?.Code ?? stripeEvent.Type, ct);
+                    break;
+            }
+        }
+
+        return Ok();
+    }
 }

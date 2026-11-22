@@ -9,7 +9,6 @@
     "node_modules",
     "dist",
     "src/**/*.test.ts",
-    "src/**/__tests__/**",
-    "src/services/productService.ts"
+    "src/**/__tests__/**"
   ]
 }

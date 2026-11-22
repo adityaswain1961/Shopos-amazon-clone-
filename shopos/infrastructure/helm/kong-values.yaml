@@ -1,0 +1,62 @@
+# Values for the official Kong chart (DB-less, our declarative config):
+#
+#   kubectl -n shopos create configmap kong-declarative --from-file=kong.yml=kong/kong.yml
+#   helm repo add kong https://charts.konghq.com
+#   helm upgrade --install kong kong/kong -n shopos -f infrastructure/helm/kong-values.yaml
+#
+# Kong is stateless in DB-less mode, so it scales horizontally like any service.
+image:
+  repository: kong
+  tag: "3.4"
+
+env:
+  database: "off"
+  nginx_worker_processes: "auto"
+  mem_cache_size: "256m"          # proxy-cache micro-cache lives here
+  proxy_access_log: "off"         # access logs at 100k rps cost real money; use metrics
+  proxy_error_log: /dev/stderr
+  admin_listen: "127.0.0.1:8444 ssl"
+  # IMPORTANT for rate limiting: Kong sits behind the CDN + ingress, so the TCP
+  # peer is always a proxy. Without these, every user shares the ingress pod's
+  # IP and the per-IP limit applies to the whole site. Kong is not reachable
+  # from outside the cluster (ClusterIP), so trusting in-cluster hops is safe.
+  # Also enable `use-forwarded-headers: "true"` in the ingress-nginx ConfigMap
+  # (and restrict it to your CDN's IP ranges via `proxy-real-ip-cidr`).
+  trusted_ips: "0.0.0.0/0,::/0"
+  real_ip_header: X-Forwarded-For
+  real_ip_recursive: "on"
+
+dblessConfig:
+  configMap: kong-declarative
+
+ingressController:
+  enabled: false
+
+proxy:
+  type: ClusterIP                 # traffic arrives via ingress-nginx / cloud LB
+
+admin:
+  enabled: false
+
+resources:
+  requests: { cpu: 500m, memory: 512Mi }
+  limits: { memory: 1Gi }
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+serviceMonitor:
+  enabled: false                  # enable if you run the Prometheus Operator

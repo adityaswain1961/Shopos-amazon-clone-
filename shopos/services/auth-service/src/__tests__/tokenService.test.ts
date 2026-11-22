@@ -5,13 +5,15 @@ jest.mock('../config/env', () => ({
     JWT_PUBLIC_KEY: '',
     JWT_ACCESS_TOKEN_TTL: 900,
     JWT_REFRESH_TOKEN_TTL: 604800,
+    JWT_PREVIOUS_PUBLIC_KEY: '',
+    LOG_LEVEL: 'error',
   },
 }));
 
 import {
   initializeKeyPair, signAccessToken, verifyAccessToken,
   decodeToken, generateRefreshToken, hashRefreshToken,
-  generateSecureToken, getJWKS,
+  generateSecureToken, getJWKS, computeKid, getKeyPair,
 } from '../services/tokenService';
 import type { UserRole } from '@shopos/shared-types';
 
@@ -120,6 +122,22 @@ describe('TokenService', () => {
       expect(jwks.keys[0].use).toBe('sig');
       expect(jwks.keys[0].n).toBeDefined();
       expect(jwks.keys[0].e).toBeDefined();
+    });
+  });
+
+  describe('horizontal scaling', () => {
+    it('derives a deterministic kid from the public key (same on every replica)', () => {
+      const { publicKey, kid } = getKeyPair();
+      expect(computeKid(publicKey)).toBe(kid);
+      expect(computeKid(publicKey)).toBe(computeKid(publicKey));
+    });
+
+    it('issues a unique jti per access token (used for revocation)', () => {
+      const input = { sub: 'u', email: 'j@e.com', roles: ['customer' as UserRole], permissions: [] };
+      const a = decodeToken(signAccessToken(input))!;
+      const b = decodeToken(signAccessToken(input))!;
+      expect(a.jti).toBeDefined();
+      expect(a.jti).not.toBe(b.jti);
     });
   });
 });

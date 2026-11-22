@@ -4,7 +4,9 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(3003),
 
-  // Database (PostgreSQL)
+  // Database (PostgreSQL). Size the pool in the URL, e.g.
+  //   ...?connection_limit=10&pool_timeout=5            (direct)
+  //   ...?pgbouncer=true&connection_limit=20            (via PgBouncer, recommended)
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
   // Redis
@@ -19,6 +21,12 @@ const envSchema = z.object({
   AWS_S3_REGION: z.string().default('ap-south-1'),
   AWS_ACCESS_KEY_ID: z.string().default(''),
   AWS_SECRET_ACCESS_KEY: z.string().default(''),
+  // S3-compatible endpoint, e.g. https://<account>.r2.cloudflarestorage.com (empty = AWS S3)
+  S3_ENDPOINT: z.string().default(''),
+  S3_FORCE_PATH_STYLE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   // CDN
   CDN_BASE_URL: z.string().default('https://cdn.shopos.dev'),
@@ -29,6 +37,13 @@ const envSchema = z.object({
 
   // Frontend
   FRONTEND_URL: z.string().default('http://localhost:3000'),
+
+  // Logging
+  LOG_LEVEL: z.string().default(''),
+  ACCESS_LOG: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   // Rate limiting
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),

@@ -1,26 +1,23 @@
-# ShopOS Kafka topic catalog (reference for operators)
+# ShopOS Kafka topic catalog (created by infrastructure/kafka/create-topics.sh).
+# Every topic also has a `<topic>.dlq` dead-letter topic.
+#
+# Saga (orchestrated by order-service; all messages keyed by orderId):
+#   order.created ─► inventory ─► inventory.confirmed | inventory.failed
+#   inventory.confirmed ─► order ─► payment.initiate ─► payment ─► payment.completed | payment.failed
+#   payment.completed ─► order ─► order.confirmed ─► inventory (commit stock), notification
+#   payment.failed / timeout ─► order ─► inventory.release + order.cancelled
+#   payment.completed for an already-cancelled order ─► payment.refund_requested
 topics:
-  - user.registered
-  - user.email_verified
-  - user.product_viewed
-  - product.created
-  - product.updated
-  - product.price_dropped
-  - inventory.low_stock
-  - inventory.back_in_stock
-  - inventory.confirmed
-  - inventory.release
-  - cart.item_added
-  - cart.abandoned
-  - order.created
-  - order.confirmed
-  - order.shipped
-  - order.delivered
-  - order.cancelled
-  - payment.initiate
-  - payment.completed
-  - payment.failed
-  - payment.refunded
-  - review.submitted
-  - search.query_made
-  - search.zero_results
+  users:      [user.registered, user.profile_updated, user.account_deleted]
+  catalog:    [product.created, product.updated, product.price_dropped, product.categories]
+  orders:     [order.created, order.confirmed, order.cancelled, order.shipped]
+  inventory:  [inventory.confirmed, inventory.failed, inventory.release]
+  payments:   [payment.initiate, payment.completed, payment.failed, payment.refund_requested, payment.refunded]
+  reviews:    [review.submitted]
+
+partitions:
+  development: 6
+  production: 24   # >= max replicas of the busiest consumer group
+replication:
+  development: 1
+  production: 3    # with min.insync.replicas=2 and acks=all on producers

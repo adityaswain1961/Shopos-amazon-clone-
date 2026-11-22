@@ -9,6 +9,8 @@ jest.mock('../config/env', () => ({
     KAFKA_BROKERS: 'localhost:9092', KAFKA_CLIENT_ID: 'auth-test',
     FRONTEND_URL: 'http://localhost:3000',
     RATE_LIMIT_WINDOW_MS: 60000, RATE_LIMIT_MAX_REQUESTS: 100,
+    BCRYPT_ROUNDS: 10, MONGO_MAX_POOL_SIZE: 5, JWT_PREVIOUS_PUBLIC_KEY: '',
+    LOG_LEVEL: 'error', ACCESS_LOG: false,
   },
 }));
 
@@ -63,7 +65,7 @@ describe('POST /api/v1/auth/register', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('should register a new user successfully', async () => {
-    jest.spyOn(UserAuth, 'findOne').mockResolvedValue(null);
+    jest.spyOn(UserAuth, 'exists').mockResolvedValue(null);
     jest.spyOn(UserAuth, 'create').mockResolvedValue({
       _id: new mongoose.Types.ObjectId(), email: 'newuser@example.com',
       roles: ['customer'], permissions: [], isEmailVerified: false,
@@ -78,16 +80,25 @@ describe('POST /api/v1/auth/register', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.user.email).toBe('newuser@example.com');
     expect(emailService.sendVerificationEmail).toHaveBeenCalled();
-    expect(publishEvent).toHaveBeenCalledWith('user.registered', expect.objectContaining({ type: 'user.registered' }));
+    expect(publishEvent).toHaveBeenCalledWith('user.registered', expect.objectContaining({ type: 'user.registered' }), expect.any(String));
   });
 
   it('should return 409 for duplicate email', async () => {
-    jest.spyOn(UserAuth, 'findOne').mockResolvedValue({ email: 'x@x.com' } as any);
+    jest.spyOn(UserAuth, 'exists').mockResolvedValue({ _id: new mongoose.Types.ObjectId() } as any);
     const res = await request(app).post('/api/v1/auth/register').send({
       email: 'x@x.com', password: 'SecureP@ss1', name: 'Dup',
     });
     expect(res.status).toBe(409);
     expect(res.body.success).toBe(false);
+  });
+
+  it('should return 409 when a concurrent registration wins the race', async () => {
+    jest.spyOn(UserAuth, 'exists').mockResolvedValue(null);
+    jest.spyOn(UserAuth, 'create').mockRejectedValue(Object.assign(new Error('E11000 duplicate key'), { code: 11000 }));
+    const res = await request(app).post('/api/v1/auth/register').send({
+      email: 'race@x.com', password: 'SecureP@ss1', name: 'Race',
+    });
+    expect(res.status).toBe(409);
   });
 
   it('should return 400 for invalid input', async () => {
@@ -113,7 +124,7 @@ describe('POST /api/v1/auth/login', () => {
   let passwordHash: string;
   const userId = new mongoose.Types.ObjectId();
 
-  beforeAll(async () => { passwordHash = await bcrypt.hash('SecureP@ss1', 12); });
+  beforeAll(async () => { passwordHash = await bcrypt.hash('SecureP@ss1', 10); });
 
   it('should login successfully', async () => {
     jest.spyOn(UserAuth, 'findOne').mockReturnValue({
@@ -143,12 +154,35 @@ describe('POST /api/v1/auth/login', () => {
         roles: ['customer'], permissions: [], failedLoginAttempts: 0, lockoutUntil: null,
       }),
     } as any);
+    const inc = jest.spyOn(UserAuth, 'findOneAndUpdate').mockResolvedValue({ failedLoginAttempts: 1 } as any);
     jest.spyOn(UserAuth, 'updateOne').mockResolvedValue({} as any);
 
     const res = await request(app).post('/api/v1/auth/login').send({
       email: 'l@e.com', password: 'WrongP@ss1!',
     });
+    expect(inc).toHaveBeenCalledWith(expect.anything(), { $inc: { failedLoginAttempts: 1 } }, expect.anything());
     expect(res.status).toBe(401);
+  });
+
+  it('should restart the failed-attempt count once a lockout has expired', async () => {
+    jest.spyOn(UserAuth, 'findOne').mockReturnValue({
+      select: jest.fn().mockResolvedValue({
+        _id: userId, email: 'l@e.com', passwordHash,
+        roles: ['customer'], permissions: [], failedLoginAttempts: 5,
+        lockoutUntil: new Date(Date.now() - 60_000), // expired a minute ago
+      }),
+    } as any);
+    const upd = jest.spyOn(UserAuth, 'findOneAndUpdate').mockResolvedValue({ failedLoginAttempts: 1 } as any);
+    const relock = jest.spyOn(UserAuth, 'updateOne').mockResolvedValue({} as any);
+
+    const res = await request(app).post('/api/v1/auth/login').send({ email: 'l@e.com', password: 'WrongP@ss1!' });
+    expect(res.status).toBe(401);
+    expect(upd).toHaveBeenCalledWith(
+      expect.anything(),
+      { $set: { failedLoginAttempts: 1, lockoutUntil: null } },
+      expect.anything(),
+    );
+    expect(relock).not.toHaveBeenCalled(); // one typo after a lockout must not re-lock
   });
 
   it('should return 401 for non-existent user', async () => {
@@ -194,11 +228,10 @@ describe('POST /api/v1/auth/refresh', () => {
   it('should refresh tokens', async () => {
     const uid = new mongoose.Types.ObjectId();
     const raw = 'valid-rt';
-    jest.spyOn(RefreshToken, 'findOne').mockResolvedValue({
+    const claim = jest.spyOn(RefreshToken, 'findOneAndUpdate').mockResolvedValue({
       _id: new mongoose.Types.ObjectId(), userId: uid, tokenHash: hashRefreshToken(raw),
       family: 'fam', deviceInfo: { ua: 't', ip: '1' },
       expiresAt: new Date(Date.now() + 604800000), revokedAt: null,
-      save: jest.fn().mockResolvedValue(undefined),
     } as any);
     jest.spyOn(UserAuth, 'findById').mockResolvedValue({
       _id: uid, email: 'r@e.com', roles: ['customer'], permissions: [],
@@ -208,12 +241,33 @@ describe('POST /api/v1/auth/refresh', () => {
     const res = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: raw });
     expect(res.status).toBe(200);
     expect(res.body.data.tokens.accessToken).toBeDefined();
+    // the claim must be atomic and conditional on the token still being live
+    expect(claim).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenHash: hashRefreshToken(raw), revokedAt: null }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('should return 409 (not revoke the family) for a concurrent refresh within the grace window', async () => {
+    jest.spyOn(RefreshToken, 'findOneAndUpdate').mockResolvedValue(null);
+    jest.spyOn(RefreshToken, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({
+        userId: new mongoose.Types.ObjectId(), family: 'fam', revokedAt: new Date(),
+      }),
+    } as any);
+    const revoke = jest.spyOn(RefreshToken, 'updateMany').mockResolvedValue({} as any);
+    const res = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: 'just-rotated' });
+    expect(res.status).toBe(409);
+    expect(revoke).not.toHaveBeenCalled();
   });
 
   it('should return 403 on token reuse', async () => {
-    jest.spyOn(RefreshToken, 'findOne').mockResolvedValue({
-      _id: new mongoose.Types.ObjectId(), userId: new mongoose.Types.ObjectId(),
-      family: 'fam', revokedAt: new Date(), save: jest.fn(),
+    jest.spyOn(RefreshToken, 'findOneAndUpdate').mockResolvedValue(null);
+    jest.spyOn(RefreshToken, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({
+        userId: new mongoose.Types.ObjectId(), family: 'fam', revokedAt: new Date(Date.now() - 60_000),
+      }),
     } as any);
     jest.spyOn(RefreshToken, 'updateMany').mockResolvedValue({} as any);
     const res = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: 'reused' });
@@ -221,8 +275,11 @@ describe('POST /api/v1/auth/refresh', () => {
   });
 
   it('should return 401 for expired token', async () => {
-    jest.spyOn(RefreshToken, 'findOne').mockResolvedValue({
-      family: 'fam', expiresAt: new Date(Date.now() - 1000), revokedAt: null,
+    jest.spyOn(RefreshToken, 'findOneAndUpdate').mockResolvedValue(null);
+    jest.spyOn(RefreshToken, 'findOne').mockReturnValue({
+      lean: jest.fn().mockResolvedValue({
+        userId: new mongoose.Types.ObjectId(), family: 'fam', expiresAt: new Date(Date.now() - 1000), revokedAt: null,
+      }),
     } as any);
     const res = await request(app).post('/api/v1/auth/refresh').send({ refreshToken: 'exp' });
     expect(res.status).toBe(401);
@@ -233,15 +290,15 @@ describe('GET /api/v1/auth/verify-email', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('should verify with valid token', async () => {
-    const m = { save: jest.fn().mockResolvedValue(undefined), isEmailVerified: false, emailVerifyToken: null, emailVerifyExpiry: null };
-    jest.spyOn(UserAuth, 'findOne').mockResolvedValue(m as any);
+    const upd = jest.spyOn(UserAuth, 'findOneAndUpdate').mockResolvedValue({ _id: new mongoose.Types.ObjectId() } as any);
     const res = await request(app).get('/api/v1/auth/verify-email').query({ token: 'valid' });
     expect(res.status).toBe(200);
-    expect(m.save).toHaveBeenCalled();
+    // only a hash of the token is ever stored / queried
+    expect(JSON.stringify(upd.mock.calls[0]?.[0])).not.toContain('"valid"');
   });
 
   it('should return 400 for invalid token', async () => {
-    jest.spyOn(UserAuth, 'findOne').mockResolvedValue(null);
+    jest.spyOn(UserAuth, 'findOneAndUpdate').mockResolvedValue(null);
     const res = await request(app).get('/api/v1/auth/verify-email').query({ token: 'bad' });
     expect(res.status).toBe(400);
   });
@@ -269,7 +326,7 @@ describe('POST /api/v1/auth/reset-password', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('should reset password', async () => {
-    const m = { save: jest.fn().mockResolvedValue(undefined), passwordHash: 'old', resetPasswordToken: null, resetPasswordExpiry: null, failedLoginAttempts: 0, lockoutUntil: null };
+    const m = { _id: new mongoose.Types.ObjectId(), save: jest.fn().mockResolvedValue(undefined), passwordHash: 'old', resetPasswordToken: null, resetPasswordExpiry: null, failedLoginAttempts: 0, lockoutUntil: null };
     jest.spyOn(UserAuth, 'findOne').mockResolvedValue(m as any);
     jest.spyOn(RefreshToken, 'updateMany').mockResolvedValue({} as any);
     const res = await request(app).post('/api/v1/auth/reset-password').send({ token: 'valid', password: 'NewP@ss123' });
@@ -293,9 +350,11 @@ describe('GET /.well-known/jwks.json', () => {
   it('should return JWKS', async () => {
     const res = await request(app).get('/.well-known/jwks.json');
     expect(res.status).toBe(200);
-    expect(res.body.data.keys).toHaveLength(1);
-    expect(res.body.data.keys[0].kty).toBe('RSA');
-    expect(res.body.data.keys[0].alg).toBe('RS256');
+    // raw RFC 7517 document, no { success, data } envelope
+    expect(res.body.keys).toHaveLength(1);
+    expect(res.body.keys[0].kty).toBe('RSA');
+    expect(res.body.keys[0].alg).toBe('RS256');
+    expect(res.body.keys[0].kid).toMatch(/^[A-Za-z0-9_-]{16}$/);
   });
 });
 

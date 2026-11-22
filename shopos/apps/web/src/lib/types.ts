@@ -52,6 +52,8 @@ export interface Product {
   variants?: ProductVariant[];
   category?: { id: string; name: string; slug: string } | null;
   highlights?: string[];
+  seoTitle?: string | null;
+  seoDescription?: string | null;
 }
 
 export interface CartItem {
@@ -64,13 +66,41 @@ export interface CartItem {
   slug?: string;
 }
 
+export interface ShippingAddress {
+  fullName: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  state?: string;
+  postalCode: string;
+  country?: string;
+  phone: string;
+}
+
+export interface OrderItem {
+  productId: string;
+  variantId?: string | null;
+  productTitle: string;
+  sku: string;
+  quantity: number;
+  unitPrice: number | string;
+  totalPrice: number | string;
+}
+
 export interface Order {
   id: string;
   orderNumber: string;
+  /** pending → confirmed | cancelled | payment_failed → shipped → delivered */
   status: string;
+  sagaStatus?: string;
+  subtotalAmount?: number | string;
+  discountAmount?: number | string;
   totalAmount?: number | string;
+  currency?: string;
+  failureReason?: string | null;
   createdAt?: string;
   userId?: string;
+  items?: OrderItem[];
 }
 
 export interface SearchResult {

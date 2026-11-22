@@ -1,25 +1,36 @@
-global:
-  imageTag: ""  # set by CI/CD pipeline
-  imagePullPolicy: Always
+# Production overrides — sized for a ~1M concurrent-user peak with a CDN in
+# front (see docs/SCALING.md for the math). HPA keeps the steady state small;
+# maxReplicas is the ceiling for peaks, not what you pay for all day.
 
-autoscaling:
-  enabled: true
-  minReplicas: 3
-  maxReplicas: 20
-  targetCPUUtilization: 65
+global:
+  imageTag: ""            # set by CI/CD (--set global.imageTag=<git sha>)
+  imagePullPolicy: IfNotPresent
+  kafka:
+    partitions: 24        # >= max replicas of the busiest consumer group
+    replication: 3
+
+defaults:
+  autoscaling:
+    minReplicas: 3        # one per availability zone
+    maxReplicas: 30
+    targetCPUUtilization: 60
 
 services:
   auth-service:
-    replicas: 3
-  order-service:
-    replicas: 3
+    autoscaling: { minReplicas: 3, maxReplicas: 40 }   # login spikes (bcrypt)
+  product-service:
+    autoscaling: { minReplicas: 4, maxReplicas: 60 }   # catalog misses past CDN + Kong cache
   cart-service:
-    replicas: 3
-
-resources:
-  requests:
-    cpu: 250m
-    memory: 512Mi
-  limits:
-    cpu: 1000m
-    memory: 1Gi
+    autoscaling: { minReplicas: 3, maxReplicas: 30 }
+  order-service:
+    autoscaling: { minReplicas: 3, maxReplicas: 24 }   # bounded by Kafka partitions
+  inventory-service:
+    autoscaling: { minReplicas: 3, maxReplicas: 24 }
+  payment-service:
+    autoscaling: { minReplicas: 3, maxReplicas: 24 }
+  discovery-service:
+    autoscaling: { minReplicas: 3, maxReplicas: 30 }
+  notification-service:
+    autoscaling: { minReplicas: 2, maxReplicas: 12 }
+  analytics-service:
+    autoscaling: { minReplicas: 1, maxReplicas: 3 }

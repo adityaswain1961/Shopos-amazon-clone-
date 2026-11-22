@@ -5,7 +5,11 @@ metadata:
   namespace: {{ .Values.global.namespace }}
 data:
   KAFKA_BROKERS: {{ .Values.global.kafka.brokers | quote }}
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: {{ .Values.global.kafka.brokers | quote }}
   AUTH_JWKS_URL: {{ .Values.global.auth.jwksUrl | quote }}
+  FRONTEND_URL: {{ .Values.global.frontendUrl | quote }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.global.otel.endpoint | quote }}
   NODE_ENV: production
+  ASPNETCORE_ENVIRONMENT: Production
   LOG_LEVEL: info
+  PAYMENT_MODE: stripe
